@@ -2,7 +2,6 @@
 =============================================================================
 TỐI ƯU HÓA ĐÈN GIAO THÔNG – MẠNG LƯỚI 10 NÚT (GIỜ CAO ĐIỂM)
 Thuật toán: NSGA-II + Local Search Đa Mục Tiêu
-Cải tiến: TRẢ LẠI 100% HÀM CHUẨN HÓA FITNESS TỶ LỆ GỐC
 =============================================================================
 """
 import numpy as np
@@ -28,10 +27,10 @@ BASELINE_G2 = []
 BASELINE_OFF = []
 
 # Chu kỳ dài hơn để xả dòng xe lớn (Cao điểm)
-C_MIN, C_MAX = 85, 105  
-G_MIN, G_MAX = 15, 85  
+# Mở rộng giới hạn để xả dòng xe lớn (Cao điểm)
+C_MIN, C_MAX = 80, 100
+G_MIN, G_MAX = 15, 120  
 OFF_MIN = 0
-
 # ===================== 1. HÀM ĐỌC DỮ LIỆU THỰC TẾ =====================
 def tao_dl_thuc_te():
     global df_nodes, DISTANCES, BASELINE_C, BASELINE_G1, BASELINE_G2, BASELINE_OFF, L_MAX_LIST
@@ -93,7 +92,7 @@ def calc_uniform_delay(q, S, g, C):
     den = 2 * (1 - min(1.0, x) * lam)
     return max(0.0, num / den)
 
-def calc_incremental_delay(q, S, g, C, T_period=0.25):
+def calc_incremental_delay(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
@@ -116,16 +115,18 @@ def calc_lq1_uniform(q, S, g, C):
     den = 2 * C * (1 - x * lam + 1e-6)
     return max(0.0, num / den)
 
-def calc_lq2_random(q, S, g, C):
+def calc_lq2_random(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
     if x <= 0.5: return 0.0
     c_cap = S * lam
-    term = ((x - 1) ** 2) + (16 * x) / (c_cap + 1e-6)
-    lq2 = 0.25 * c_cap * ((x - 1) + np.sqrt(max(0.0, term)))
+    
+    # Sử dụng công thức chuẩn với T_period
+    term = ((x - 1) ** 2) + (8 * 0.5 * 1.0 * x) / (c_cap * T_period + 1e-6)
+    lq2 = 0.25 * c_cap * T_period * ((x - 1) + np.sqrt(max(0.0, term)))
+    
     return max(0.0, lq2)
-
 def calc_gamma_wave(offset_k, t_travel, C, beta=0.3):
     diff = abs(offset_k - t_travel) % C
     if diff > C / 2: diff = C - diff
@@ -137,7 +138,6 @@ def calc_node_stops(q, S, g, C, gamma):
     term_red = (C - g) / C
     term_sat = 1.0 / (1.0 - min(0.95, x) + 1e-6)
     return q * term_red * term_sat * gamma
-
 def evaluate_individual(individual):
     """HÀM EVALUATE BÊ Y HỆT TỪ BẢN 26 NÚT - CHUẨN XÁC 100% VẬT LÝ"""
     n = len(df_nodes)
@@ -146,7 +146,7 @@ def evaluate_individual(individual):
     c = individual[-1]
 
     f1_total, f2_total, f3_total = 0.0, 0.0, 0.0
-    X_MAX = 0.95 
+    X_MAX = 1 
 
     for i in range(n):
         q, S, L, v, qb = df_nodes['q'][i], df_nodes['S'][i], df_nodes['L'][i], df_nodes['v'][i], df_nodes['qb'][i]
@@ -190,9 +190,15 @@ def evaluate_individual(individual):
         ns1 = calc_node_stops(q1, S1, g1, c, gamma)
         ns2 = calc_node_stops(q2, S2, g2, c, gamma)
         f3_total += (ns1 + ns2)
+        
+    # Thêm hàm phạt nếu chu kỳ C đi quá xa so với baseline 90s
+    # Phạt nặng hơn ở giờ cao điểm để kìm hãm xu hướng tăng C
+    penalty_c = abs(c - 90) * 10.0
+    f1_total += penalty_c
+    f2_total += penalty_c
+    f3_total += penalty_c
 
     return f1_total, f2_total, f3_total
-
 def calculate_real_metrics(individual):
     """Tính giá trị f1, f2, f3 thực tế để báo cáo (KHÔNG CỘNG HÀM PHẠT)"""
     n = len(df_nodes)
@@ -226,13 +232,12 @@ def calculate_real_metrics(individual):
 
 # ===================== 3. AHP VÀ TỔNG HỢP FITNESS =====================
 def lay_ma_tran_ahp():
-    # CAO ĐIỂM: Ưu tiên Độ trễ (f1)
+    # Ma trận đã được "hạ nhiệt", f1 vẫn ưu tiên nhưng không quá gắt
     return np.array([
-        [1.0,  3.0, 5.0],
-        [1/3,  1.0, 2.0],
-        [1/5,  1/2, 1.0]
+        [1.0, 2.0, 4.0],
+        [1/2, 1.0, 2.0],
+        [1/4, 1/2, 1.0]
     ])
-
 def tinh_trong_so_ahp_chuan(ma_tran_A):
     n = ma_tran_A.shape[0]
     geo_means = np.array([np.prod(ma_tran_A[i, :])**(1/n) for i in range(n)])
@@ -242,10 +247,14 @@ def tinh_trong_so_ahp_chuan(ma_tran_A):
     CR = CI / 0.58
     return trong_so.tolist(), lambda_max, CI, CR
 
-def weighted_score(fit, weights, bl_fit):
-    """TRẢ LẠI HÀM TÍNH FITNESS CHUẨN (TỶ LỆ SO VỚI BASELINE) ĐÚNG YÊU CẦU CỦA BẠN"""
-    return weights[0]*(fit[0]/(bl_fit[0] + 1e-9)) + weights[1]*(fit[1]/(bl_fit[1] + 1e-9)) + weights[2]*(fit[2]/(bl_fit[2] + 1e-9))
-
+def weighted_sum_score(fit, weights, f_min, f_max):
+    score = 0
+    for j in range(3):
+        # Dùng f_min_safe = 0.0 để chặn normalization bị âm
+        f_min_safe = 0.0 
+        norm = (fit[j] - f_min_safe) / (f_max[j] - f_min_safe) if f_max[j] > f_min_safe else 0
+        score += weights[j] * norm
+    return score
 # ===================== 4. CẤU TRÚC INDIVIDUAL & NSGA-II =====================
 def repair_individual(ind):
     n = len(df_nodes)
@@ -267,16 +276,10 @@ def create_individual(force_c=None):
     G1, OFF = [], []
     for i in range(n):
         L = int(df_nodes['L'][i])
-        g_trong = c - 2 * L
-        
-        g1_ideal = int(round(g_trong * 0.6))
-        g1 = g1_ideal + random.randint(-3, 3) 
-        g1 = int(np.clip(g1, G_MIN, max(G_MIN, g_trong - G_MIN)))
-        
-        G1.append(g1)
-        OFF.append(random.randint(0, max(1, c-1)))
+        max_g = max(G_MIN, c - G_MIN - 2*L)
+        G1.append(random.randint(G_MIN, max(G_MIN, max_g)))
+        OFF.append(random.randint(OFF_MIN, c-1))
     return repair_individual(G1 + OFF + [c])
-
 def crossover(p1, p2):
     n = len(p1)
     c1, c2 = list(p1), list(p2)
@@ -285,20 +288,19 @@ def crossover(p1, p2):
             c1[i], c2[i] = c2[i], c1[i]
     return repair_individual(c1), repair_individual(c2)
 
-def mutate(ind):
+def mutate(ind, pm=0.2): # Thêm tham số pm (dù trong hàm đang fix cứng 0.5)
     n = len(df_nodes)
     ind = list(ind)
-    if random.random() < 0.6: 
-        for _ in range(random.randint(3, 7)): 
+    if random.random() < 0.5: 
+        for _ in range(random.randint(2, 6)):
             k = random.randint(0, 2*n) 
             if k < n: 
-                ind[k] += random.choice([-4, -2, 2, 4])
+                ind[k] += random.choice([-5, -3, 3, 5])
             elif k < 2*n: 
-                ind[k] += random.choice([-15, -7, 7, 15]) 
+                ind[k] += random.choice([-10, 10])
             else: 
-                ind[k] += random.choice([-10, -5, 5, 10])
+                ind[k] += random.choice([-8, 0, 8])
     return repair_individual(ind)
-
 def dominates(a, b):
     return all(ai <= bi for ai, bi in zip(a, b)) and any(ai < bi for ai, bi in zip(a, b))
 
@@ -405,22 +407,30 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
                     ranks.append(ranks_c[idx]); crowding.append(crowding_c[idx])
                 break
                 
+        # [ĐOẠN CẦN THAY THẾ BẮT ĐẦU TỪ ĐÂY TRONG HÀM chay_toi_uu]
         pareto_fits_gen = [pop_fit[i] for i in range(len(pop)) if ranks[i] == 1]
-        best_ahp_gen = min([weighted_score(f, w_ahp, bl_fit_anchor) for f in pareto_fits_gen])
-        lich_su_f.append(best_ahp_gen)
+        if pareto_fits_gen:
+            pf_arr = np.array(pareto_fits_gen)
+            f_min_gen, f_max_gen = pf_arr.min(axis=0), pf_arr.max(axis=0)
+            best_ahp_gen = min([weighted_sum_score(f, w_ahp, f_min_gen, f_max_gen) for f in pareto_fits_gen])
+            lich_su_f.append(best_ahp_gen)
 
     t_nsga2 = time.time() - t_start
 
     # ========================================================
-    # LOCAL SEARCH: Sử dụng ĐÚNG hàm weighted_score chuẩn
+    # LOCAL SEARCH: Sử dụng chuẩn hóa Min-Max Scaling
     # ========================================================
     t_ls_start = time.time()
     pareto_idx = [i for i in range(len(pop)) if ranks[i] == 1]
     pareto_pop = [pop[i] for i in pareto_idx]
     pareto_fits = [pop_fit[i] for i in pareto_idx]
     
-    scores = [weighted_score(f, w_ahp, bl_fit_anchor) for f in pareto_fits]
-    top_k = max(1, int(len(pareto_pop)*0.4)) 
+    # Tính f_min, f_max trên toàn bộ tập Pareto hiện tại
+    all_fits = np.array(pareto_fits)
+    f_min, f_max = all_fits.min(axis=0), all_fits.max(axis=0)
+    
+    scores = [weighted_sum_score(f, w_ahp, f_min, f_max) for f in pareto_fits]
+    top_k = max(1, int(len(pareto_pop)*0.3)) 
     top_idx = sorted(range(len(scores)), key=lambda i: scores[i])[:top_k]
 
     best_ind = pareto_pop[top_idx[0]]
@@ -440,7 +450,9 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
             
             neighbor = repair_individual(neighbor)
             new_fit_penalized = evaluate_individual(neighbor)
-            new_score = weighted_score(new_fit_penalized, w_ahp, bl_fit_anchor)
+            
+            # Truyền f_min, f_max vào hàm tính điểm mới
+            new_score = weighted_sum_score(new_fit_penalized, w_ahp, f_min, f_max)
 
             if new_score < score:
                 ind, score = neighbor, new_score
@@ -448,7 +460,7 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
         if score < best_score:
             best_ind = ind
             best_score = score
-
+            
     t_ls = time.time() - t_ls_start
     best_fit_real = calculate_real_metrics(best_ind)
     
@@ -482,7 +494,7 @@ def ve_dt(best_ind, best_fit_real, bl_fit_real, lich_su_f, thong_ke_mo_hinh):
     print("-" * 85)
     
     print("\n" + "=" * 82)
-    print(f"{'SO SÁNH TRƯỚC & SAU TỐI ƯU HÓA (GIÁ TRỊ THỰC TẾ KHÔNG HÀM PHẠT)':^82}")
+    print(f"{'SO SÁNH TRƯỚC & SAU TỐI ƯU HÓA':^82}")
     print("=" * 82)
     print(f"{'Tiêu chí':<32} {'Baseline (Trục 10 Nút)':<22} {'Tối ưu':<18} {'Cải thiện'}")
     print("-" * 82)
@@ -540,7 +552,11 @@ def ve_dt(best_ind, best_fit_real, bl_fit_real, lich_su_f, thong_ke_mo_hinh):
     plt.close()
 
 # ===================== MAIN =====================
+# ===================== MAIN =====================
 if __name__ == "__main__":
+    # 1. Bắt đầu bấm giờ toàn bộ chương trình
+    total_start_time = time.time()
+    
     tao_dl_thuc_te()
     
     A_matrix = lay_ma_tran_ahp()
@@ -581,4 +597,8 @@ if __name__ == "__main__":
             thong_ke_mo_hinh_chinh_xac = copy.deepcopy(thong_ke_mo_hinh)
             
     print(f"\n--> Đã trích xuất mô hình tốt nhất (Fitness = {best_overall_score:.5f})")
-    ve_dt(best_ind_chinh_xac, best_fit_real_chinh_xac, bl_fit_real_chinh_xac, lich_su_f_chinh_xac, thong_ke_mo_hinh_chinh_xac)
+    ve_dt(best_ind_chinh_xac, best_fit_real_chinh_xac, bl_fit_real_chinh_xac, lich_su_f_chinh_xac, thong_ke_mo_hinh_chinh_xac) 
+    
+    # 2. Kết thúc bấm giờ và in ra màn hình
+    total_end_time = time.time()
+    print(f"\n[!] Tổng thời gian thực thi toàn bộ chương trình: {total_end_time - total_start_time:.2f} giây.")

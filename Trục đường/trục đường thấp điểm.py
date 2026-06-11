@@ -1,8 +1,7 @@
 """
 =============================================================================
 TỐI ƯU HÓA ĐÈN GIAO THÔNG – MẠNG LƯỚI 10 NÚT (GIỜ THẤP ĐIỂM)
-Thuật toán: NSGA-II + Local Search Đa Mục Tiêu 
-Cải tiến: Mở rộng không gian tìm kiếm, Khởi tạo thông minh, AHP Ưu tiên Sóng xanh
+Thuật toán: NSGA-II + Local Search Đa Mục Tiêu
 =============================================================================
 """
 import numpy as np
@@ -19,30 +18,27 @@ warnings.filterwarnings('ignore')
 os.makedirs('outputs', exist_ok=True)
 
 # ===================== BIẾN TOÀN CỤC CHỨA DỮ LIỆU =====================
+# ===================== BIẾN TOÀN CỤC CHỨA DỮ LIỆU =====================
 df_nodes = pd.DataFrame()
 DISTANCES = []
-L_MAX_LIST = [] # [ĐỒNG NHẤT 26 NÚT] Thêm mảng lưu giới hạn hàng chờ
+L_MAX_LIST = [] 
 BASELINE_C = []
 BASELINE_G1 = []
 BASELINE_G2 = []
 BASELINE_OFF = []
-BASELINE_F1 = []
-BASELINE_F2 = []
-BASELINE_F3 = []
 
-# Tham số đã được mở rộng cho 10 nút thấp điểm
-# ĐÃ SỬA: Tăng C_MIN lên 65 để nút giao có đủ thời gian xả hàng chờ
-C_MIN, C_MAX = 65, 80  
-G_MIN, G_MAX = 12, 80  
+# Bóp chặt không gian tìm kiếm chu kỳ cho giờ THẤP ĐIỂM
+# Baseline là 75s, ta cho phép thuật toán tìm chu kỳ ngắn hơn hẳn để xả xe nhanh
+C_MIN, C_MAX = 50,70
+G_MIN, G_MAX = 12, 60  
 OFF_MIN = 0
-
 # ===================== 1. HÀM ĐỌC DỮ LIỆU THỰC TẾ =====================
 def tao_dl_thuc_te():
-    global df_nodes, DISTANCES, BASELINE_C, BASELINE_G1, BASELINE_G2, BASELINE_OFF
-    global BASELINE_F1, BASELINE_F2, BASELINE_F3, L_MAX_LIST
+    global df_nodes, DISTANCES, BASELINE_C, BASELINE_G1, BASELINE_G2, BASELINE_OFF, L_MAX_LIST
     
-    print("[+] Đang nạp dữ liệu mạng lưới 10 nút...")
+    print("[+] Đang nạp dữ liệu mạng lưới 10 nút (Thấp Điểm)...")
     try:
+        # Nhớ đổi tên file csv của bạn cho đúng với dữ liệu giờ thấp điểm nhé
         df_nut = pd.read_csv("Du_lieu_nut_thap_diem.xlsx - Baseline_10Nut_ThapDiem_Dep.csv")
     except:
         df_nut = pd.read_excel("Du_lieu_nut_thap_diem.xlsx")
@@ -70,7 +66,6 @@ def tao_dl_thuc_te():
         if tu - 1 < n_nodes:
             DISTANCES[tu - 1] = float(row.iloc[2])
 
-    # ================= BỔ SUNG LOGIC TÍNH L_MAX (ĐỒNG NHẤT 26 NÚT) =================
     L_XE = 6.0     
     N_LAN = 3      
     ALPHA = 0.85   
@@ -82,36 +77,15 @@ def tao_dl_thuc_te():
             L_MAX_LIST.append(max_veh)
         else:
             L_MAX_LIST.append(9999)
-    # ===============================================================================
 
     BASELINE_C = df_nut['Chu_kỳ_C (s)'].astype(int).tolist()
     BASELINE_G1 = df_nut['g1_Pha1 (s)'].astype(int).tolist()
     BASELINE_G2 = df_nut['g2_Pha2 (s)'].astype(int).tolist()
     BASELINE_OFF = df_nut['Offset_o (s)'].astype(int).tolist()
 
-    # Tính Base Fitness
-    for i in range(n_nodes):
-        q, S, L, v, qb = df_nodes['q'][i], df_nodes['S'][i], df_nodes['L'][i], df_nodes['v'][i], df_nodes['qb'][i]
-        c, g1, g2, off = BASELINE_C[i], BASELINE_G1[i], BASELINE_G2[i], BASELINE_OFF[i]
-        q1, q2 = q * 0.6, q * 0.4
-        
-        d1 = calc_uniform_delay(q1, S*0.6, g1, c) + calc_incremental_delay(q1, S*0.6, g1, c) + calc_residual_delay(q1, qb*0.6)
-        d2 = calc_uniform_delay(q2, S*0.4, g2, c) + calc_incremental_delay(q2, S*0.4, g2, c) + calc_residual_delay(q2, qb*0.4)
-        BASELINE_F1.append((d1*q1 + d2*q2)/3600)
-        
-        lq1 = calc_lq1_uniform(q1, S*0.6, g1, c) + calc_lq2_random(q1, S*0.6, g1, c)
-        lq2 = calc_lq1_uniform(q2, S*0.4, g2, c) + calc_lq2_random(q2, S*0.4, g2, c)
-        BASELINE_F2.append(lq1 + lq2) 
-        
-        t_travel = DISTANCES[i] / (v * 1000/3600 + 1e-6)
-        gamma = calc_gamma_wave(off, t_travel, c)
-        ns1 = calc_node_stops(q1, S*0.6, g1, c, gamma)
-        ns2 = calc_node_stops(q2, S*0.4, g2, c, gamma)
-        BASELINE_F3.append(ns1 + ns2)
-        
     print(f"✓ Đã load thành công {n_nodes} nút và đồng bộ chuẩn hóa cấu trúc dữ liệu.")
 
-# ===================== 2. CÁC HÀM TÍNH TOÁN TOÁN HỌC (ĐỒNG NHẤT 26 NÚT) =====================
+# ===================== 2. CÁC HÀM TÍNH TOÁN TOÁN HỌC =====================
 def calc_uniform_delay(q, S, g, C):
     if g <= 0 or S <= 0 or C <= 0: return 9999.0
     lam = g / C
@@ -120,7 +94,7 @@ def calc_uniform_delay(q, S, g, C):
     den = 2 * (1 - min(1.0, x) * lam)
     return max(0.0, num / den)
 
-def calc_incremental_delay(q, S, g, C, T_period=0.25):
+def calc_incremental_delay(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
@@ -143,14 +117,16 @@ def calc_lq1_uniform(q, S, g, C):
     den = 2 * C * (1 - x * lam + 1e-6)
     return max(0.0, num / den)
 
-def calc_lq2_random(q, S, g, C):
+def calc_lq2_random(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
     if x <= 0.5: return 0.0
     c_cap = S * lam
-    term = ((x - 1) ** 2) + (16 * x) / (c_cap + 1e-6)
-    lq2 = 0.25 * c_cap * ((x - 1) + np.sqrt(max(0.0, term)))
+    
+    term = ((x - 1) ** 2) + (8 * 0.5 * 1.0 * x) / (c_cap * T_period + 1e-6)
+    lq2 = 0.25 * c_cap * T_period * ((x - 1) + np.sqrt(max(0.0, term)))
+    
     return max(0.0, lq2)
 
 def calc_gamma_wave(offset_k, t_travel, C, beta=0.3):
@@ -172,65 +148,65 @@ def evaluate_individual(individual):
     c = individual[-1]
 
     f1_total, f2_total, f3_total = 0.0, 0.0, 0.0
-    penalty_f1, penalty_f2, penalty_f3 = 0.0, 0.0, 0.0
-
     X_MAX = 0.95 
 
     for i in range(n):
+        # Trích xuất dữ liệu của nút hiện tại
         q, S, L, v, qb = df_nodes['q'][i], df_nodes['S'][i], df_nodes['L'][i], df_nodes['v'][i], df_nodes['qb'][i]
         g1, off_k = G1[i], OFF[i]
-        
         g2 = max(G_MIN, c - g1 - 2*int(L))
+        
+        # Phân bổ lưu lượng và khả năng thông hành cho 2 pha
         q1, q2 = q * 0.6, q * 0.4
-        S1, S2 = S * 0.6, S * 0.4
+        S1, S2 = S * 0.6, S * 0.4 
 
-        # F1: TỔNG ĐỘ TRỄ (Công thức chuẩn 26 nút)
+        # ---------------------------------------------------------
+        # F1: TỔNG THỜI GIAN TRỄ (Delay)
+        # ---------------------------------------------------------
         d1 = calc_uniform_delay(q1, S1, g1, c) + calc_incremental_delay(q1, S1, g1, c) + calc_residual_delay(q1, qb*0.6)
         d2_delay = calc_uniform_delay(q2, S2, g2, c) + calc_incremental_delay(q2, S2, g2, c) + calc_residual_delay(q2, qb*0.4)
         f1_total += (d1 * q1 + d2_delay * q2) / 3600.0
 
-        # F2: HÀNG CHỜ (Công thức chuẩn 26 nút)
+        # Ràng buộc hệ số bão hòa (X_MAX) - Phạt nặng nếu vượt ngưỡng
+        x1 = (q1 * c) / (S1 * g1 + 1e-6)
+        x2 = (q2 * c) / (S2 * g2 + 1e-6)
+        
+        penalty_x = 0
+        if x1 > X_MAX: penalty_x += (x1 - X_MAX) * 10000
+        if x2 > X_MAX: penalty_x += (x2 - X_MAX) * 10000
+        f1_total += penalty_x
+        f2_total += penalty_x
+        f3_total += penalty_x
+
+        # ---------------------------------------------------------
+        # F2: ĐỘ DÀI HÀNG CHỜ VÀ RÀNG BUỘC (Queue Length)
+        # ---------------------------------------------------------
         lq1 = calc_lq1_uniform(q1, S1, g1, c) + calc_lq2_random(q1, S1, g1, c)
         lq2_queue = calc_lq1_uniform(q2, S2, g2, c) + calc_lq2_random(q2, S2, g2, c)
-        f2_total += (lq1 + lq2_queue)
+        
+        # Ràng buộc chiều dài hàng chờ tối đa (L_MAX)
+        penalty_lq = 0
+        if lq1 > L_MAX_LIST[i]: penalty_lq += (lq1 - L_MAX_LIST[i]) * 1000
+        if lq2_queue > L_MAX_LIST[i]: penalty_lq += (lq2_queue - L_MAX_LIST[i]) * 1000
+        f1_total += penalty_lq
+        f2_total += (lq1 + lq2_queue) + penalty_lq
+        f3_total += penalty_lq
 
-        # F3: SỐ LƯỢT DỪNG (Tích hợp hệ số sóng Gamma wave)
+        # ---------------------------------------------------------
+        # F3: SỐ LẦN DỪNG XE (Stops)
+        # ---------------------------------------------------------
         t_travel = DISTANCES[i] / (v * 1000/3600 + 1e-6)
         gamma = calc_gamma_wave(off_k, t_travel, c)
         ns1 = calc_node_stops(q1, S1, g1, c, gamma)
         ns2 = calc_node_stops(q2, S2, g2, c, gamma)
         f3_total += (ns1 + ns2)
+    penalty_c = (c - C_MIN) * 5.0 
+    f1_total += penalty_c
+    f2_total += penalty_c
+    f3_total += penalty_c
 
-        # ================= HÀM PHẠT TỈ LỆ ĐA MỤC TIÊU =================
-        x1 = (q1 * c) / (S1 * g1 + 1e-6)
-        x2 = (q2 * c) / (S2 * g2 + 1e-6)
-        
-        # 1. Phạt bão hòa (Trọng số scale theo độ lớn tự nhiên của f1, f2, f3)
-        if x1 > X_MAX: 
-            penalty_f1 += (x1 - X_MAX) * 50    # f1 đơn vị là xe.h
-            penalty_f2 += (x1 - X_MAX) * 20    # f2 đơn vị là xe
-            penalty_f3 += (x1 - X_MAX) * 500   # f3 đơn vị là lượt
-        if x2 > X_MAX: 
-            penalty_f1 += (x2 - X_MAX) * 50
-            penalty_f2 += (x2 - X_MAX) * 20
-            penalty_f3 += (x2 - X_MAX) * 500
-            
-        # 2. Phạt tràn bến/hàng chờ vượt L_max
-        if lq1 > L_MAX_LIST[i]: 
-            over = lq1 - L_MAX_LIST[i]
-            penalty_f1 += over * 0.5  
-            penalty_f2 += over * 2.0  # f2 chịu phạt nặng nhất khi tràn hàng chờ
-            penalty_f3 += over * 10.0
-        if lq2_queue > L_MAX_LIST[i]: 
-            over = lq2_queue - L_MAX_LIST[i]
-            penalty_f1 += over * 0.5
-            penalty_f2 += over * 2.0
-            penalty_f3 += over * 10.0
-        # ===============================================================
-
-    return f1_total + penalty_f1, f2_total + penalty_f2, f3_total + penalty_f3
+    return f1_total, f2_total, f3_total
 def calculate_real_metrics(individual):
-    """Tính các giá trị f1, f2, f3 thực tế (KHÔNG CỘNG HÀM PHẠT) để báo cáo"""
     n = len(df_nodes)
     G1 = individual[:n]
     OFF = individual[n:2*n]
@@ -242,20 +218,18 @@ def calculate_real_metrics(individual):
         q, S, L, v, qb = df_nodes['q'][i], df_nodes['S'][i], df_nodes['L'][i], df_nodes['v'][i], df_nodes['qb'][i]
         g1, off_k = G1[i], OFF[i]
         g2 = max(G_MIN, c - g1 - 2*int(L))
+        
         q1, q2 = q * 0.6, q * 0.4
-        S1, S2 = S * 0.6, S * 0.4
+        S1, S2 = S * 0.6, S * 0.4 
 
-        # F1 thực
         d1 = calc_uniform_delay(q1, S1, g1, c) + calc_incremental_delay(q1, S1, g1, c) + calc_residual_delay(q1, qb*0.6)
         d2 = calc_uniform_delay(q2, S2, g2, c) + calc_incremental_delay(q2, S2, g2, c) + calc_residual_delay(q2, qb*0.4)
         f1_real += (d1 * q1 + d2 * q2) / 3600.0
 
-        # F2 thực
         lq1 = calc_lq1_uniform(q1, S1, g1, c) + calc_lq2_random(q1, S1, g1, c)
         lq2 = calc_lq1_uniform(q2, S2, g2, c) + calc_lq2_random(q2, S2, g2, c)
         f2_real += (lq1 + lq2)
 
-        # F3 thực
         t_travel = DISTANCES[i] / (v * 1000/3600 + 1e-6)
         gamma = calc_gamma_wave(off_k, t_travel, c)
         f3_real += calc_node_stops(q1, S1, g1, c, gamma) + calc_node_stops(q2, S2, g2, c, gamma)
@@ -264,13 +238,14 @@ def calculate_real_metrics(individual):
 
 # ===================== 3. AHP VÀ TỔNG HỢP FITNESS =====================
 def lay_ma_tran_ahp():
-    # ĐÃ SỬA: Ma trận cân bằng (Ưu tiên Sóng xanh 50%, Độ trễ 25%, Hàng chờ 25%)
+    # Ma trận AHP điều chỉnh cho giờ THẤP ĐIỂM
+    # Tăng nhẹ trọng số của f2 để tránh kết quả tối ưu bị âm so với baseline.
+    # f1 và f3 vẫn là ưu tiên chính nhưng khoảng cách với f2 được thu hẹp.
     return np.array([
-        [1.0,  1.0, 1/2],  
-        [1.0,  1.0, 1/2],  
-        [2.0,  2.0, 1.0]   
+        [1.0, 2.0, 1.0],  # f1 quan trọng gấp 2 lần f2, ngang bằng f3
+        [1/2, 1.0, 1/2],  # f2 bằng 1/2 độ quan trọng của f1 và f3
+        [1.0, 2.0, 1.0]   # f3 quan trọng gấp 2 lần f2, ngang bằng f1
     ])
-
 def tinh_trong_so_ahp_chuan(ma_tran_A):
     n = ma_tran_A.shape[0]
     geo_means = np.array([np.prod(ma_tran_A[i, :])**(1/n) for i in range(n)])
@@ -280,9 +255,13 @@ def tinh_trong_so_ahp_chuan(ma_tran_A):
     CR = CI / 0.58
     return trong_so.tolist(), lambda_max, CI, CR
 
-def weighted_score(fit, weights, bl_fit):
-    return weights[0]*(fit[0]/(bl_fit[0] + 1e-9)) + weights[1]*(fit[1]/(bl_fit[1] + 1e-9)) + weights[2]*(fit[2]/(bl_fit[2] + 1e-9))
-
+def weighted_sum_score(fit, weights, f_min, f_max):
+    score = 0
+    for j in range(3):
+        f_min_safe = 0.0 
+        norm = (fit[j] - f_min_safe) / (f_max[j] - f_min_safe) if f_max[j] > f_min_safe else 0
+        score += weights[j] * norm
+    return score
 # ===================== 4. CẤU TRÚC INDIVIDUAL & NSGA-II =====================
 def repair_individual(ind):
     n = len(df_nodes)
@@ -304,15 +283,9 @@ def create_individual(force_c=None):
     G1, OFF = [], []
     for i in range(n):
         L = int(df_nodes['L'][i])
-        g_trong = c - 2 * L
-        
-        # Khởi tạo thông minh tránh g1=15
-        g1_ideal = int(round(g_trong * 0.6))
-        g1 = g1_ideal + random.randint(-3, 3) 
-        g1 = int(np.clip(g1, G_MIN, max(G_MIN, g_trong - G_MIN)))
-        
-        G1.append(g1)
-        OFF.append(random.randint(0, max(1, c-1)))
+        max_g = max(G_MIN, c - G_MIN - 2*L)
+        G1.append(random.randint(G_MIN, max(G_MIN, max_g)))
+        OFF.append(random.randint(OFF_MIN, c-1))
     return repair_individual(G1 + OFF + [c])
 
 def crossover(p1, p2):
@@ -323,19 +296,18 @@ def crossover(p1, p2):
             c1[i], c2[i] = c2[i], c1[i]
     return repair_individual(c1), repair_individual(c2)
 
-def mutate(ind):
+def mutate(ind, pm=0.2): 
     n = len(df_nodes)
     ind = list(ind)
-    # Tăng cường đột biến (Probability 60%)
-    if random.random() < 0.6: 
-        for _ in range(random.randint(3, 7)): 
+    if random.random() < 0.5: 
+        for _ in range(random.randint(2, 6)):
             k = random.randint(0, 2*n) 
             if k < n: 
-                ind[k] += random.choice([-4, -2, 2, 4])
+                ind[k] += random.choice([-5, -3, 3, 5])
             elif k < 2*n: 
-                ind[k] += random.choice([-15, -7, 7, 15]) # Bước nhảy Offset xa hơn
+                ind[k] += random.choice([-10, 10])
             else: 
-                ind[k] += random.choice([-10, -5, 5, 10])
+                ind[k] += random.choice([-8, 0, 8])
     return repair_individual(ind)
 
 def dominates(a, b):
@@ -391,16 +363,12 @@ def select_tournament(pop, pop_fit, ranks, crowding, k=3):
 def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
     t_start = time.time()
     
-    bl_ind = repair_individual(BASELINE_G1 + BASELINE_OFF + [75])
+    c_base = int(np.mean(BASELINE_C)) if len(BASELINE_C) > 0 else 75
+    bl_ind = repair_individual(BASELINE_G1 + BASELINE_OFF + [c_base])
+    bl_fit_real = calculate_real_metrics(bl_ind)
     
-    # [CẢI TIẾN QUAN TRỌNG 1]: Tính Base Fitness THỰC TẾ (Không phạt) để làm mỏ neo AHP
-    bl_fit = calculate_real_metrics(bl_ind)
-    # Bảo vệ chống chia 0 nếu dữ liệu mạng lưới bất thường
-    bl_fit = [max(1e-3, f) for f in bl_fit] 
-    
-    # Khởi tạo quần thể ban đầu
     pop = [bl_ind]
-    pop += [create_individual(force_c=75) for _ in range(n_qt // 3)]
+    pop += [create_individual(force_c=c_base) for _ in range(n_qt // 3)]
     pop += [create_individual() for _ in range(n_qt - 1 - n_qt // 3)]
 
     pop_fit = [evaluate_individual(ind) for ind in pop]
@@ -408,11 +376,10 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
     crowding = [0.0]*n_qt
     for front in fronts:
         cd = crowding_distance(pop_fit, front)
-        for j, idx in enumerate(front): crowding[idx] = cd[j]
+        for j, enumerate_idx in enumerate(front): crowding[enumerate_idx] = cd[j]
 
     lich_su_f = []
 
-    # Tiến trình NSGA-II
     for gen in range(n_the_he):
         offspring = []
         while len(offspring) < n_qt:
@@ -429,7 +396,7 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
         crowding_c = [0.0]*len(combined)
         for front in fronts_c:
             cd = crowding_distance(combined_fit, front)
-            for j, idx in enumerate(front): crowding_c[idx] = cd[j]
+            for j, enumerate_idx in enumerate(front): crowding_c[enumerate_idx] = cd[j]
 
         pop, pop_fit, ranks, crowding = [], [], [], []
         for front in fronts_c:
@@ -446,60 +413,57 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
                 break
                 
         pareto_fits_gen = [pop_fit[i] for i in range(len(pop)) if ranks[i] == 1]
-        best_ahp_gen = min([weighted_score(f, w_ahp, bl_fit) for f in pareto_fits_gen])
-        lich_su_f.append(best_ahp_gen)
+        if pareto_fits_gen:
+            pf_arr = np.array(pareto_fits_gen)
+            f_min_gen, f_max_gen = pf_arr.min(axis=0), pf_arr.max(axis=0)
+            best_ahp_gen = min([weighted_sum_score(f, w_ahp, f_min_gen, f_max_gen) for f in pareto_fits_gen])
+            lich_su_f.append(best_ahp_gen)
 
     t_nsga2 = time.time() - t_start
 
     # ========================================================
-    # LOCAL SEARCH CƯỜNG ĐỘ CAO (MỞ KHÓA KHÔNG GIAN)
+    # LOCAL SEARCH: Sử dụng chuẩn hóa Min-Max Scaling
     # ========================================================
     t_ls_start = time.time()
     pareto_idx = [i for i in range(len(pop)) if ranks[i] == 1]
     pareto_pop = [pop[i] for i in pareto_idx]
     pareto_fits = [pop_fit[i] for i in pareto_idx]
     
-    best_ind = list(bl_ind)
-    best_fit = list(bl_fit)
-    best_score = 1.0 # Baseline score là 1.0
+    all_fits = np.array(pareto_fits)
+    f_min, f_max = all_fits.min(axis=0), all_fits.max(axis=0)
     
-    scores = [weighted_score(f, w_ahp, bl_fit) for f in pareto_fits]
-    top_k = max(1, int(len(pareto_pop)*0.4)) # Cho phép LS rà quét 40% mặt Pareto tốt nhất
+    scores = [weighted_sum_score(f, w_ahp, f_min, f_max) for f in pareto_fits]
+    top_k = max(1, int(len(pareto_pop)*0.3)) 
     top_idx = sorted(range(len(scores)), key=lambda i: scores[i])[:top_k]
 
-    if scores[top_idx[0]] < 1.0:
-        best_ind = pareto_pop[top_idx[0]]
-        best_fit = pareto_fits[top_idx[0]]
-        best_score = scores[top_idx[0]]
+    best_ind = pareto_pop[top_idx[0]]
+    best_score = scores[top_idx[0]]
 
     for idx in top_idx:
         ind = list(pareto_pop[idx])
-        fit = list(pareto_fits[idx])
         score = scores[idx]
         
-        # [CẢI TIẾN QUAN TRỌNG 2]: Xóa chặn `if score >= 1.0: continue` 
-        # Để Local Search được quyền đào sâu mọi cá thể tiềm năng
-        
-        for _ in range(40):
+        for _ in range(50):
             neighbor = list(ind)
             n_var = len(df_nodes)
-            for k in random.sample(range(2*n_var + 1), random.randint(2, 4)):
+            for k in random.sample(range(2*n_var + 1), random.randint(2, 5)):
                 if k < n_var: neighbor[k] += random.choice([-2, 0, 2])
                 elif k < 2*n_var: neighbor[k] += random.choice([-8, 8])
                 else: neighbor[k] += random.choice([-5, 0, 5])
             
             neighbor = repair_individual(neighbor)
-            new_fit = evaluate_individual(neighbor)
-            new_score = weighted_score(new_fit, w_ahp, bl_fit)
+            new_fit_penalized = evaluate_individual(neighbor)
+            new_score = weighted_sum_score(new_fit_penalized, w_ahp, f_min, f_max)
 
             if new_score < score:
-                ind, fit, score = neighbor, list(new_fit), new_score
+                ind, score = neighbor, new_score
 
-        # Chỉ lưu lại kết quả nều tốt hơn Best Cục Bộ
         if score < best_score:
-            best_ind, best_fit, best_score = ind, fit, score
-
+            best_ind = ind
+            best_score = score
+            
     t_ls = time.time() - t_ls_start
+    best_fit_real = calculate_real_metrics(best_ind)
     
     thong_ke_mo_hinh = {
         'thoi_gian_chay': t_nsga2 + t_ls,
@@ -508,9 +472,10 @@ def chay_toi_uu(w_ahp, n_qt=80, n_the_he=60):
         'best_score': best_score
     }
     
-    return best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh
+    return best_ind, best_fit_real, bl_fit_real, lich_su_f, thong_ke_mo_hinh
+
 # ===================== 6. TRỰC QUAN HÓA =====================
-def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
+def ve_dt(best_ind, best_fit_real, bl_fit_real, lich_su_f, thong_ke_mo_hinh):
     import matplotlib as mpl 
     n = len(df_nodes)
     c_opt = best_ind[-1]
@@ -522,7 +487,7 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     plt.rcParams['font.family'] = 'DejaVu Sans' if 'DejaVu Sans' in [f.name for f in mpl.font_manager.fontManager.ttflist] else 'sans-serif'
     
     print("\n" + "="*85)
-    print("      BÁO CÁO KẾT QUẢ TỐI ƯU HÓA ĐÈN GIAO THÔNG PHỐI HỢP CHO TRỤC ĐƯỜNG 10 NÚT")
+    print("      BÁO CÁO KẾT QUẢ TỐI ƯU HÓA ĐÈN GIAO THÔNG PHỐI HỢP CHO TRỤC 10 NÚT (THẤP ĐIỂM)")
     print("="*85)
     print(f" * Điểm số hàm mục tiêu tổng hợp (Fitness) : {thong_ke_mo_hinh['best_score']:.6f}")
     print(f" * Chu kỳ đèn tín hiệu chung tối ưu (C)     : {int(c_opt)} giây (s)")
@@ -530,17 +495,10 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     print("-" * 85)
     
     print("\n" + "=" * 82)
-    print(f"{'SO SÁNH TRƯỚC & SAU TỐI ƯU HÓA (GIÁ TRỊ THỰC TẾ)':^82}")
+    print(f"{'SO SÁNH TRƯỚC & SAU TỐI ƯU HÓA':^82}")
     print("=" * 82)
     print(f"{'Tiêu chí':<32} {'Baseline (Trục 10 Nút)':<22} {'Tối ưu':<18} {'Cải thiện'}")
     print("-" * 82)
-
-    # -------------------------------------------------------------------------
-    # SỬA Ở ĐÂY: Dùng hàm tính toán thực tế (không phạt) để xuất báo cáo
-    # -------------------------------------------------------------------------
-    bl_ind = repair_individual(BASELINE_G1 + BASELINE_OFF + [75])
-    bl_fit_real = calculate_real_metrics(bl_ind)  # Tính điểm Baseline KHÔNG PHẠT
-    best_fit_real = calculate_real_metrics(best_ind) # Tính điểm Tối ưu KHÔNG PHẠT
 
     p1_imp = ((bl_fit_real[0] - best_fit_real[0]) / bl_fit_real[0] * 100) if bl_fit_real[0] != 0 else 0
     p2_imp = ((bl_fit_real[1] - best_fit_real[1]) / bl_fit_real[1] * 100) if bl_fit_real[1] != 0 else 0
@@ -550,7 +508,6 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     print(f"{'Độ dài hàng chờ TB (f2)':<32} {bl_fit_real[1]:,.1f} xe{'':<13} {best_fit_real[1]:,.1f} xe{'':<9} {p2_imp:>8.1f}%")
     print(f"{'Số lần dừng xe (f3)':<32} {bl_fit_real[2]:,.0f} lượt/h{'':<11} {best_fit_real[2]:,.0f} lượt/h{'':<7} {p3_imp:>8.1f}%")
     print("=" * 82 + "\n")
-    # -------------------------------------------------------------------------
 
     print(f" {'Nút giao':<10} | {'Thời gian đèn xanh hiệu quả (g1, g2)':<45} | {'Độ lệch pha o_k (s)':<15}")
     print("-" * 85)
@@ -561,13 +518,13 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     print(" [i] Đang xuất biểu đồ trực quan thực tế...\n")
 
     plt.figure(figsize=(10, 4.5))
-    plt.plot(range(1, len(lich_su_f)+1), lich_su_f, color='#e74c3c', linewidth=2.5, marker='o', markersize=4)
-    plt.title('Tiến trình hội tụ AHP của Thuật toán NSGA-II', fontsize=13, fontweight='bold', pad=12)
+    plt.plot(range(1, len(lich_su_f)+1), lich_su_f, color='#3498db', linewidth=2.5, marker='o', markersize=4) # Đổi màu line cho Thấp điểm
+    plt.title('Tiến trình hội tụ AHP của Thuật toán NSGA-II (Thấp Điểm)', fontsize=13, fontweight='bold', pad=12)
     plt.xlabel('Thế hệ tiến hóa')
     plt.ylabel('Giá trị AHP Fitness')
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
-    plt.savefig('outputs/10Nut_HoiTu.png', dpi=150)
+    plt.savefig('outputs/10Nut_ThapDiem_HoiTu.png', dpi=150)
     plt.close()
 
     fig, ax1 = plt.subplots(figsize=(12, 6))
@@ -578,7 +535,7 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     
     ax1.set_xlabel('Các nút giao thông', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Thời gian xanh hiệu dụng (giây)', fontsize=12, fontweight='bold')
-    ax1.set_title(f'PHÂN BỔ THỜI GIAN XANH & ĐỘ LỆCH PHA (CHU KỲ CHUNG C = {int(c_opt)}s)', fontsize=14, fontweight='bold', pad=15)
+    ax1.set_title(f'PHÂN BỔ THỜI GIAN XANH & ĐỘ LỆCH PHA (CHU KỲ CHUNG C = {int(c_opt)}s) - THẤP ĐIỂM', fontsize=14, fontweight='bold', pad=15)
     ax1.grid(axis='y', linestyle='--', alpha=0.6)
 
     ax2 = ax1.twinx()
@@ -592,11 +549,15 @@ def ve_dt(best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh):
     ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=11)
 
     plt.tight_layout()
-    plt.savefig('outputs/10Nut_PhanBoXanh_Offset.png', dpi=150)
+    plt.savefig('outputs/10Nut_ThapDiem_PhanBoXanh_Offset.png', dpi=150)
     plt.close()
 
 # ===================== MAIN =====================
+# ===================== MAIN =====================
 if __name__ == "__main__":
+    # 1. Bắt đầu bấm giờ toàn bộ chương trình
+    total_start_time = time.time()
+    
     tao_dl_thuc_te()
     
     A_matrix = lay_ma_tran_ahp()
@@ -621,16 +582,21 @@ if __name__ == "__main__":
     
     for i in range(SO_LAN_CHAY):
         print(f"Chạy lần {i+1}/{SO_LAN_CHAY}...", end=" ")
-        best_ind, best_fit, bl_fit, lich_su_f, thong_ke_mo_hinh = chay_toi_uu(w_ahp_kich_ban, n_qt=SO_QUAN_THE, n_the_he=SO_THE_HE)
+        best_ind, best_fit_real, bl_fit_real, lich_su_f, thong_ke_mo_hinh = chay_toi_uu(w_ahp_kich_ban, n_qt=SO_QUAN_THE, n_the_he=SO_THE_HE)
+        
         print(f" Fitness = {thong_ke_mo_hinh['best_score']:.5f} | C = {best_ind[-1]}s")
         
         if thong_ke_mo_hinh['best_score'] < best_overall_score:
             best_overall_score = thong_ke_mo_hinh['best_score']
             best_ind_chinh_xac = copy.deepcopy(best_ind)
-            best_fit_chinh_xac = copy.deepcopy(best_fit)
-            bl_fit_chinh_xac = copy.deepcopy(bl_fit)
+            best_fit_real_chinh_xac = copy.deepcopy(best_fit_real)
+            bl_fit_real_chinh_xac = copy.deepcopy(bl_fit_real)
             lich_su_f_chinh_xac = copy.deepcopy(lich_su_f)
             thong_ke_mo_hinh_chinh_xac = copy.deepcopy(thong_ke_mo_hinh)
             
     print(f"\n--> Đã trích xuất mô hình tốt nhất (Fitness = {best_overall_score:.5f})")
-    ve_dt(best_ind_chinh_xac, best_fit_chinh_xac, bl_fit_chinh_xac, lich_su_f_chinh_xac, thong_ke_mo_hinh_chinh_xac)
+    ve_dt(best_ind_chinh_xac, best_fit_real_chinh_xac, bl_fit_real_chinh_xac, lich_su_f_chinh_xac, thong_ke_mo_hinh_chinh_xac) 
+    
+    # 2. Kết thúc bấm giờ và in ra màn hình
+    total_end_time = time.time()
+    print(f"\n[!] Tổng thời gian thực thi toàn bộ chương trình: {total_end_time - total_start_time:.2f} giây.")

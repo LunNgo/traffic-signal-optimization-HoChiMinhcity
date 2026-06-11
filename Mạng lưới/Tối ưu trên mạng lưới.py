@@ -28,7 +28,7 @@ COLORS = ['#2196F3', '#FF5722', '#4CAF50', '#FF9800', '#9C27B0','#00BCD4', '#F44
 # ===================== BIẾN TOÀN CỤC CHỨA DỮ LIỆU =====================
 df_nodes = pd.DataFrame()
 DISTANCES = []
-L_MAX_LIST = [] # BỔ SUNG: Danh sách lưu giới hạn hàng chờ của từng nút
+L_MAX_LIST = [] 
 BASELINE_C = []
 BASELINE_G1 = []
 BASELINE_G2 = []
@@ -37,7 +37,6 @@ BASELINE_F1 = []
 BASELINE_F2 = []
 BASELINE_F3 = []
 
-# Bracket chu kỳ đồng bộ với code Độ Nhạy kịch bản Base (85-95s)
 C_MIN, C_MAX = 85, 95 
 G_MIN, G_MAX = 15, 80
 OFF_MIN, OFF_MAX = 0, 149
@@ -91,10 +90,9 @@ def load_data_from_excel():
                 DISTANCES[tu - 1] = float(row.get(col_kc, 200.0))
                 
         # ================= BỔ SUNG LOGIC TÍNH L_MAX =================
-        L_XE = 6.0     # Chiều dài trung bình 1 xe (mét)
-        N_LAN = 3      # Cố định 3 làn xe cho mọi nút
-        ALPHA = 0.85   # Hệ số an toàn chống tràn (85% chiều dài)
-        
+        L_XE = 6.0     
+        N_LAN = 3      
+        ALPHA = 0.85   
         L_MAX_LIST = []
         for d in DISTANCES:
             if d > 0:
@@ -102,9 +100,7 @@ def load_data_from_excel():
                 max_veh = round((d / L_XE) * N_LAN * ALPHA)
                 L_MAX_LIST.append(max_veh)
             else:
-                L_MAX_LIST.append(9999) # Nút đầu tiên không có nút thượng lưu, cho hàng chờ vô hạn
-        # ============================================================
-
+                L_MAX_LIST.append(9999) 
         BASELINE_C = [90] * n_nodes 
         BASELINE_G1 = df_nut[col_g1].fillna(50).astype(int).tolist()
         BASELINE_G2 = df_nut[col_g2].fillna(34).astype(int).tolist()
@@ -150,7 +146,7 @@ def calc_uniform_delay(q, S, g, C):
     den = 2 * (1 - min(1.0, x) * lam)
     return max(0.0, num / den)
 
-def calc_incremental_delay(q, S, g, C, T_period=0.25):
+def calc_incremental_delay(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
@@ -172,15 +168,15 @@ def calc_lq1_uniform(q, S, g, C):
     num = (q / 3600.0) * (r ** 2)
     den = 2 * C * (1 - x * lam + 1e-6)
     return max(0.0, num / den)
-
-def calc_lq2_random(q, S, g, C):
+def calc_lq2_random(q, S, g, C, T_period=1):
     if g <= 0 or S <= 0: return 0.0
     lam = g / C
     x = (q * C) / (S * g)
     if x <= 0.5: return 0.0
     c_cap = S * lam
-    term = ((x - 1) ** 2) + (16 * x) / (c_cap + 1e-6)
-    lq2 = 0.25 * c_cap * ((x - 1) + np.sqrt(max(0.0, term)))
+    term = ((x - 1) ** 2) + (8 * 0.5 * 1.0 * x) / (c_cap * T_period + 1e-6)
+    lq2 = 0.25 * c_cap * T_period * ((x - 1) + np.sqrt(max(0.0, term)))
+    
     return max(0.0, lq2)
 
 def calc_gamma_wave(offset_k, t_travel, C, beta=0.3):
@@ -234,21 +230,17 @@ def evaluate_individual(individual):
         f2_total += penalty_x
         f3_total += penalty_x
         # =============================================================================
-
-        # ================= SỬA LỖI 2: KIỂM TRA HÀNG CHỜ ĐỘC LẬP TỪNG PHA =============
         lq1 = calc_lq1_uniform(q1, S1, g1, c) + calc_lq2_random(q1, S1, g1, c)
         lq2_queue = calc_lq1_uniform(q2, S2, g2, c) + calc_lq2_random(q2, S2, g2, c)
         
         penalty_lq = 0
-        # Kiểm tra độc lập hướng đi thẳng (Pha 1)
+        
         if lq1 > L_MAX_LIST[i]:
             penalty_lq += (lq1 - L_MAX_LIST[i]) * 1000
-            
-        # Kiểm tra độc lập hướng cắt ngang (Pha 2)
+        
         if lq2_queue > L_MAX_LIST[i]:
             penalty_lq += (lq2_queue - L_MAX_LIST[i]) * 1000
-            
-        # Áp dụng phạt hàng chờ (nếu có) và cộng dồn hàng chờ thực tế
+        
         f1_total += penalty_lq
         f2_total += (lq1 + lq2_queue) + penalty_lq
         f3_total += penalty_lq
@@ -425,7 +417,7 @@ def nsga2(pop_size=120, n_gen=80, seed=42):
 
 # ===================== AHP & LOCAL SEARCH =====================
 def ahp_pairwise_matrix():
-    return np.array([[1, 3, 5], [1/3, 1, 3], [1/5, 1/3, 1]])
+    return np.array([[1.0, 3.0, 4.0], [1/3, 1.0,2.0], [1/4, 1/2, 1.0]])
 
 def compute_ahp_weights(A):
     n = A.shape[0]
